@@ -29,6 +29,6 @@ COPY . .
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Run the bot
-CMD ["python", "main.py"]
+# Run the bot via PDM so it picks up dependencies from __pypackages__
+CMD ["pdm", "run", "python", "main.py"]
 
