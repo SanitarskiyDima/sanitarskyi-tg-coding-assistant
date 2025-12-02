@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 class RunStatus(str, Enum):
     """Run status enumeration."""
 
+    CREATING = "creating"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"

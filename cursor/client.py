@@ -360,7 +360,9 @@ class CursorClient:
                 status = RunStatus.FAILED
             elif status_str == "EXPIRED":
                 status = RunStatus.EXPIRED
-            elif status_str in ["CREATING", "RUNNING"]:
+            elif status_str == "CREATING":
+                status = RunStatus.CREATING
+            elif status_str == "RUNNING":
                 status = RunStatus.RUNNING
             else:
                 # Default to running if status is unknown
@@ -578,12 +580,12 @@ class CursorClient:
                     await status_callback(elapsed, agent_status.status)
                     last_status_update = elapsed
                 except Exception as e:
-                    logger.warning(f"Status callback failed: {e}")
+                    logger.warning(f"Status callback failed for agent {agent_id} with status {agent_status.status}: {e}", exc_info=True)
 
             # If agent was COMPLETED when we sent follow-up, we must first see it RUNNING
             # before treating new COMPLETED as a new answer.
             if waiting_for_restart:
-                if agent_status.status == RunStatus.RUNNING:
+                if agent_status.status in [RunStatus.CREATING, RunStatus.RUNNING]:
                     logger.debug(f"Agent {agent_id} started running after follow-up")
                     seen_running_after_finished = True
                     waiting_for_restart = False
