@@ -1,30 +1,22 @@
-# fly.toml app configuration file generated for sanitarskyi-tg-coding-assistant on 2024-01-01T00:00:00Z
+# fly.toml app configuration file generated for sanitarskyi-tg-coding-assistant on 2025-12-02T08:12:32Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = "sanitarskyi-tg-coding-assistant"
-primary_region = "iad"
+app = 'sanitarskyi-tg-coding-assistant'
+primary_region = 'cdg'
 
 [build]
-
-[env]
-  PORT = "8080"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = true
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
 [[vm]]
-  cpu_kind = "shared"
+  cpu_kind = 'shared'
   cpus = 1
   memory_mb = 256
-
-# Note: Secrets should be set using fly secrets set command:
-# fly secrets set CURSOR_API_KEY=your_key
-# fly secrets set TELEGRAM_TOKEN=your_token
-
