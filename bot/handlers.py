@@ -247,10 +247,10 @@ async def handle_followup(message: types.Message) -> None:
             # Get the largest photo
             photo = message.photo[-1]
             
-            # Download photo to BytesIO
+            # Get file info and download photo to BytesIO
             file = await message.bot.get_file(photo.file_id)
             photo_buffer = io.BytesIO()
-            await file.download(destination=photo_buffer)
+            await message.bot.download_file(file.file_path, destination=photo_buffer)
             photo_bytes = photo_buffer.getvalue()
             photo_buffer.close()
             
