@@ -11,6 +11,7 @@ from bot.handlers import (
     handle_agent_callback,
     handle_agents,
     handle_ask,
+    handle_favrepos,
     handle_followup,
     handle_help,
     handle_plan,
@@ -117,6 +118,12 @@ async def cmd_repos(message: Message) -> None:
     await handle_repos(message)
 
 
+@router.message(Command("favrepos"))
+async def cmd_favrepos(message: Message) -> None:
+    """Handle /favrepos command."""
+    await handle_favrepos(message)
+
+
 @router.message(Command("setrepo"))
 async def cmd_setrepo(message: Message) -> None:
     """Handle /setrepo command."""
@@ -135,6 +142,12 @@ async def callback_repo_selection(callback: CallbackQuery) -> None:
     await handle_repo_callback(callback)
 
 
+@router.callback_query(F.data.startswith("fav_repo_"))
+async def callback_fav_toggle(callback: CallbackQuery) -> None:
+    """Handle favorite repository toggle callback."""
+    await handle_repo_callback(callback)
+
+
 @router.callback_query(F.data.startswith("select_agent_"))
 async def callback_agent_selection(callback: CallbackQuery) -> None:
     """Handle agent selection callback."""
@@ -145,5 +158,12 @@ async def callback_agent_selection(callback: CallbackQuery) -> None:
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message) -> None:
     """Handle text messages as follow-up responses to agents."""
+    await handle_followup(message)
+
+
+# Handle photo messages as follow-up responses
+@router.message(F.photo)
+async def handle_photo_message(message: Message) -> None:
+    """Handle photo messages as follow-up responses to agents."""
     await handle_followup(message)
 

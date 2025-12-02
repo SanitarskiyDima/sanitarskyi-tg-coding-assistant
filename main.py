@@ -47,6 +47,7 @@ async def main() -> None:
             BotCommand(command="start", description="Почати роботу з ботом"),
             BotCommand(command="help", description="Показати довідку"),
             BotCommand(command="repos", description="Показати список репозиторіїв"),
+            BotCommand(command="favrepos", description="Показати улюблені репозиторії"),
             BotCommand(command="setrepo", description="Вибрати репозиторій для роботи"),
             BotCommand(command="plan", description="Отримати план рішення задачі"),
             BotCommand(command="ask", description="Отримати уточнюючі питання"),

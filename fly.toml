@@ -4,7 +4,7 @@
 #
 
 app = 'sanitarskyi-tg-coding-assistant'
-primary_region = 'cdg'
+primary_region = 'fra'
 
 [build]
 
@@ -18,3 +18,8 @@ primary_region = 'cdg'
   cpu_kind = 'shared'
   cpus = 1
   memory_mb = 256
+
+# Mount persistent volume for storing favorites
+[[mounts]]
+  source = "favorites_data"
+  destination = "/mnt/data"
