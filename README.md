@@ -1,0 +1,317 @@
+# Telegram Bot for Cursor Cloud Agent API
+
+Telegram-бот, который является интерфейсом к Cursor Cloud Agent API и поддерживает режимы `plan`, `ask` и `solve` (в разработке).
+
+## Описание
+
+Бот позволяет отправлять текстовые задачи из Telegram в Cursor Cloud Agent, получать от него ответы (план, вопросы, решения) и возвращать их пользователю в удобном формате.
+
+## Возможности
+
+- **`/plan <задача>`** - получить пошаговый план решения задачи
+- **`/ask <задача>`** - получить уточняющие вопросы от Cursor
+- **`/solve <задача>`** - решить задачу (функция в разработке)
+- Асинхронная обработка запросов
+- Обработка ошибок с понятными сообщениями
+- Логирование всех операций
+
+## Требования
+
+- Python 3.10-3.13 (рекомендуется 3.11 или 3.12)
+  - **Примечание:** Python 3.14 пока не полностью поддерживается из-за ограничений в зависимостях (pydantic-core)
+- [PDM](https://pdm.fming.dev/) (Python Dependency Manager)
+- Telegram Bot Token (получить у [@BotFather](https://t.me/BotFather))
+- Cursor Cloud Agent API Key
+
+## Установка
+
+1. Клонируйте репозиторий:
+
+```bash
+git clone <repository-url>
+cd sanitarskyi-tg-coding-assistant
+```
+
+2. Установите PDM (если еще не установлен):
+
+```bash
+# macOS/Linux
+curl -sSL https://raw.githubusercontent.com/pdm-project/pdm/main/install-pdm.py | python3 -
+
+# или через pip
+pip install --user pdm
+
+# или через homebrew (macOS)
+brew install pdm
+```
+
+3. Инициализируйте PDM проект (если еще не инициализирован):
+
+```bash
+pdm init
+```
+
+Или просто установите зависимости (PDM автоматически создаст виртуальное окружение):
+
+```bash
+pdm install
+```
+
+**Важно:** Проект поддерживает Python 3.10-3.13. Если у вас установлен Python 3.14, переключитесь на Python 3.13 или 3.12:
+
+```bash
+# Проверьте доступные версии Python
+pdm python list
+
+# Переключитесь на Python 3.13 или 3.12
+pdm use python3.13  # или python3.12
+
+# Установите зависимости
+pdm install
+```
+
+Если у вас нет Python 3.13/3.12, установите через pyenv или homebrew:
+
+```bash
+# Через pyenv
+pyenv install 3.12.0
+pyenv local 3.12.0
+
+# Или через homebrew (macOS)
+brew install python@3.12
+pdm use python3.12
+```
+
+PDM автоматически создаст виртуальное окружение и установит все зависимости из `pyproject.toml`.
+
+4. Создайте файл `.env` на основе `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+5. Отредактируйте `.env` и укажите ваши ключи:
+
+```env
+CURSOR_API_KEY=your_cursor_api_key_here
+TELEGRAM_TOKEN=your_telegram_bot_token_here
+API_BASE=https://api.cursor.sh/v1
+```
+
+## Запуск
+
+### Локальный запуск
+
+Используйте скрипт PDM:
+
+```bash
+pdm run start
+```
+
+Или напрямую:
+
+```bash
+pdm run python main.py
+```
+
+Или активируйте виртуальное окружение PDM и запустите напрямую:
+
+```bash
+# Активация окружения
+eval $(pdm venv activate)
+
+# Запуск
+python main.py
+```
+
+Бот начнет работать и будет отвечать на команды в Telegram.
+
+### Запуск с Docker
+
+```bash
+docker build -t cursor-telegram-bot .
+docker run --env-file .env cursor-telegram-bot
+```
+
+### Деплой на fly.io
+
+1. Установите [flyctl](https://fly.io/docs/getting-started/installing-flyctl/)
+
+2. Войдите в fly.io:
+
+```bash
+fly auth login
+```
+
+3. Создайте приложение (если еще не создано):
+
+```bash
+fly launch
+```
+
+4. Установите секреты:
+
+```bash
+fly secrets set CURSOR_API_KEY=your_cursor_api_key
+fly secrets set TELEGRAM_TOKEN=your_telegram_bot_token
+```
+
+5. Деплой:
+
+```bash
+fly deploy
+```
+
+## Использование
+
+После запуска бота отправьте ему команду `/start` в Telegram, чтобы увидеть список доступных команд.
+
+### Примеры команд
+
+```
+/plan Создать REST API для управления пользователями на FastAPI
+
+/ask Как оптимизировать SQL запросы в PostgreSQL?
+
+/solve Реализовать функцию сортировки массива
+```
+
+## Структура проекта
+
+```
+project/
+├── bot/                    # Telegram bot логика
+│   ├── __init__.py
+│   ├── handlers.py        # Обработчики команд
+│   └── router.py          # Настройка роутера
+├── cursor/                 # Cursor API клиент
+│   ├── __init__.py
+│   ├── client.py          # HTTP клиент для Cursor API
+│   ├── schemas.py         # Pydantic модели
+│   └── task_manager.py    # Менеджер задач
+├── tests/                 # Тесты
+│   ├── __init__.py
+│   └── test_cursor_client.py
+├── main.py                # Точка входа
+├── settings.py            # Настройки приложения
+├── requirements.txt       # Зависимости
+├── pyproject.toml         # Конфигурация форматирования
+├── Dockerfile             # Docker образ
+├── fly.toml               # Конфигурация fly.io
+└── README.md              # Документация
+```
+
+## Разработка
+
+### Форматирование кода
+
+Проект использует `black`, `isort` и `ruff` для форматирования кода.
+
+Используйте скрипт PDM для форматирования:
+
+```bash
+pdm run format
+```
+
+Или по отдельности:
+
+```bash
+pdm run black .
+pdm run isort .
+pdm run lint  # ruff check
+```
+
+Проверка форматирования:
+
+```bash
+pdm run ruff check --fix .
+```
+
+### Управление зависимостями
+
+Добавить новую зависимость:
+
+```bash
+pdm add package-name
+```
+
+Добавить dev-зависимость:
+
+```bash
+pdm add -dG dev package-name
+```
+
+Обновить зависимости:
+
+```bash
+pdm update
+```
+
+Показать дерево зависимостей:
+
+```bash
+pdm list
+```
+
+### Запуск тестов
+
+Используйте скрипт PDM:
+
+```bash
+pdm run test
+```
+
+Или напрямую:
+
+```bash
+pdm run pytest
+```
+
+С покрытием:
+
+```bash
+pdm run pytest --cov=cursor --cov=bot
+```
+
+### Установка dev-зависимостей
+
+Для разработки установите дополнительные зависимости:
+
+```bash
+pdm install --dev
+```
+
+## Переменные окружения
+
+| Переменная | Описание | Обязательная | По умолчанию |
+|-----------|----------|--------------|--------------|
+| `CURSOR_API_KEY` | API ключ для Cursor Cloud Agent | Да | - |
+| `TELEGRAM_TOKEN` | Токен Telegram бота | Да | - |
+| `API_BASE` | Базовый URL Cursor API | Нет | `https://api.cursor.sh/v1` |
+
+## Обработка ошибок
+
+Бот обрабатывает следующие типы ошибок:
+
+- **Сетевые ошибки** - возвращается понятное сообщение пользователю
+- **Ошибки API** - отображается сообщение об ошибке от Cursor API
+- **Таймауты** - уведомление о превышении времени ожидания
+- **Неверные параметры** - подсказка по правильному использованию команды
+
+Все ошибки логируются для отладки.
+
+## TODO
+
+- [ ] Реализовать функционал `/solve` с генерацией кода
+- [ ] Добавить поддержку длинных ответов (разбивка на несколько сообщений)
+- [ ] Добавить кэширование результатов
+- [ ] Добавить метрики и мониторинг
+
+## Лицензия
+
+MIT
+
+## Автор
+
+Создано для работы с Cursor Cloud Agent API.
+
