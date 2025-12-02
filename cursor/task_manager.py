@@ -1,9 +1,9 @@
 """Task manager for executing Cursor API operations."""
 
 import logging
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
-from cursor.client import CursorClient, CursorAPIError, CursorTimeoutError
+from cursor.client import CursorClient, CursorAPIError, CursorTimeoutError, RunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +20,19 @@ class TaskManager:
         """
         self.client = client
 
-    async def run_plan(self, text: str, repository_url: str = None) -> tuple[str, str]:
+    async def run_plan(
+        self, 
+        text: str, 
+        repository_url: str = None,
+        status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None
+    ) -> tuple[str, str]:
         """
         Create a task and run it with 'plan' action.
 
         Args:
             text: Task description
             repository_url: Optional repository URL (if None, will be auto-selected)
+            status_callback: Optional callback function(elapsed_seconds, status) for status updates
 
         Returns:
             Formatted plan text
@@ -44,7 +50,10 @@ class TaskManager:
             )
 
             # Wait for agent to complete
-            completed_run = await self.client.wait_agent_completion(task.id)
+            completed_run = await self.client.wait_agent_completion(
+                task.id, 
+                status_callback=status_callback
+            )
 
             if not completed_run.output:
                 return task.id, "План не був згенерований. Спробуйте ще раз."
@@ -57,13 +66,19 @@ class TaskManager:
             logger.error(f"Unexpected error in run_plan: {str(e)}")
             raise CursorAPIError(f"Неочікувана помилка: {str(e)}") from e
 
-    async def run_ask(self, text: str, repository_url: str = None) -> tuple[str, str]:
+    async def run_ask(
+        self, 
+        text: str, 
+        repository_url: str = None,
+        status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None
+    ) -> tuple[str, str]:
         """
         Create a task and run it with 'ask' action.
 
         Args:
             text: Task description
             repository_url: Optional repository URL (if None, will be auto-selected)
+            status_callback: Optional callback function(elapsed_seconds, status) for status updates
 
         Returns:
             Formatted questions text
@@ -81,7 +96,10 @@ class TaskManager:
             )
 
             # Wait for agent to complete
-            completed_run = await self.client.wait_agent_completion(task.id)
+            completed_run = await self.client.wait_agent_completion(
+                task.id,
+                status_callback=status_callback
+            )
 
             if not completed_run.output:
                 return task.id, "Питання не були згенеровані. Спробуйте ще раз."
@@ -94,13 +112,19 @@ class TaskManager:
             logger.error(f"Unexpected error in run_ask: {str(e)}")
             raise CursorAPIError(f"Неочікувана помилка: {str(e)}") from e
 
-    async def run_solve(self, text: str, repository_url: str = None) -> tuple[str, str]:
+    async def run_solve(
+        self, 
+        text: str, 
+        repository_url: str = None,
+        status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None
+    ) -> tuple[str, str]:
         """
         Create a task and run it with 'code_generate' action.
 
         Args:
             text: Task description
             repository_url: Optional repository URL (if None, will be auto-selected)
+            status_callback: Optional callback function(elapsed_seconds, status) for status updates
 
         Returns:
             Tuple of (agent_id, formatted generated code text)
@@ -118,7 +142,10 @@ class TaskManager:
             )
 
             # Wait for agent to complete
-            completed_run = await self.client.wait_agent_completion(task.id)
+            completed_run = await self.client.wait_agent_completion(
+                task.id,
+                status_callback=status_callback
+            )
 
             if not completed_run.output:
                 base_text = (

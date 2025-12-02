@@ -9,7 +9,7 @@ from aiogram import types
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 
-from cursor.client import CursorAPIError, CursorTimeoutError, cursor_client
+from cursor.client import CursorAPIError, CursorTimeoutError, RunStatus, cursor_client
 from cursor.task_manager import TaskManager
 from bot.repository_manager import (
     get_selected_repository,
@@ -25,6 +25,21 @@ from bot.agent_manager import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def send_status_update(message: types.Message, text: str) -> None:
+    """
+    Send status update message to user.
+    Handles errors gracefully to not break main flow.
+
+    Args:
+        message: Telegram message object
+        text: Status text to send
+    """
+    try:
+        await message.reply(text)
+    except Exception as e:
+        logger.warning(f"Failed to send status update: {e}")
 
 
 async def handle_plan(message: types.Message, task_manager: TaskManager) -> None:
@@ -48,12 +63,28 @@ async def handle_plan(message: types.Message, task_manager: TaskManager) -> None
 
     # Send typing indicator
     await message.bot.send_chat_action(message.chat.id, "typing")
+    await send_status_update(message, "🔄 Створюю агента...")
 
     # Get selected repository for user
     selected_repo = get_selected_repository(message.from_user.id)
 
     try:
-        agent_id, result = await task_manager.run_plan(task_text, repository_url=selected_repo)
+        # Create status callback for progress updates
+        async def status_callback(elapsed: float, status: RunStatus) -> None:
+            if elapsed >= 10:
+                status_text = {
+                    RunStatus.RUNNING: "⏳ Агент працює над завданням...",
+                    RunStatus.CREATING: "🔄 Агент створюється...",
+                    RunStatus.EXPIRED: "⚠️ Агент застарів...",
+                }.get(status, "⏳ Агент обробляє ваш запит...")
+                await send_status_update(message, f"{status_text} (прошло {int(elapsed)}с)")
+
+        await send_status_update(message, "⏳ Агент працює над завданням...")
+        agent_id, result = await task_manager.run_plan(
+            task_text, 
+            repository_url=selected_repo,
+            status_callback=status_callback
+        )
         # Save agent ID for follow-up support
         set_last_agent_id(message.from_user.id, agent_id)
         await message.reply(result, parse_mode="Markdown")
@@ -99,12 +130,28 @@ async def handle_ask(message: types.Message, task_manager: TaskManager) -> None:
 
     # Send typing indicator
     await message.bot.send_chat_action(message.chat.id, "typing")
+    await send_status_update(message, "🔄 Створюю агента...")
 
     # Get selected repository for user
     selected_repo = get_selected_repository(message.from_user.id)
 
     try:
-        agent_id, result = await task_manager.run_ask(task_text, repository_url=selected_repo)
+        # Create status callback for progress updates
+        async def status_callback(elapsed: float, status: RunStatus) -> None:
+            if elapsed >= 10:
+                status_text = {
+                    RunStatus.RUNNING: "⏳ Агент працює над завданням...",
+                    RunStatus.CREATING: "🔄 Агент створюється...",
+                    RunStatus.EXPIRED: "⚠️ Агент застарів...",
+                }.get(status, "⏳ Агент обробляє ваш запит...")
+                await send_status_update(message, f"{status_text} (прошло {int(elapsed)}с)")
+
+        await send_status_update(message, "⏳ Агент працює над завданням...")
+        agent_id, result = await task_manager.run_ask(
+            task_text,
+            repository_url=selected_repo,
+            status_callback=status_callback
+        )
         # Save agent ID for follow-up support
         set_last_agent_id(message.from_user.id, agent_id)
         await message.reply(result, parse_mode="Markdown")
@@ -150,13 +197,27 @@ async def handle_solve(message: types.Message, task_manager: TaskManager) -> Non
 
     # Send typing indicator
     await message.bot.send_chat_action(message.chat.id, "typing")
+    await send_status_update(message, "🔄 Створюю агента...")
 
     # Get selected repository for user
     selected_repo = get_selected_repository(message.from_user.id)
 
     try:
+        # Create status callback for progress updates
+        async def status_callback(elapsed: float, status: RunStatus) -> None:
+            if elapsed >= 10:
+                status_text = {
+                    RunStatus.RUNNING: "⏳ Агент працює над завданням...",
+                    RunStatus.CREATING: "🔄 Агент створюється...",
+                    RunStatus.EXPIRED: "⚠️ Агент застарів...",
+                }.get(status, "⏳ Агент обробляє ваш запит...")
+                await send_status_update(message, f"{status_text} (прошло {int(elapsed)}с)")
+
+        await send_status_update(message, "⏳ Агент працює над завданням...")
         agent_id, result = await task_manager.run_solve(
-            task_text, repository_url=selected_repo
+            task_text,
+            repository_url=selected_repo,
+            status_callback=status_callback
         )
         # Save agent ID for follow-up support
         set_last_agent_id(message.from_user.id, agent_id)
@@ -244,6 +305,7 @@ async def handle_followup(message: types.Message) -> None:
     # Handle photo messages
     if message.photo:
         try:
+            await send_status_update(message, "📸 Обробляю фото...")
             # Get the largest photo
             photo = message.photo[-1]
             
@@ -265,6 +327,7 @@ async def handle_followup(message: types.Message) -> None:
             else:
                 followup_text = f"Користувач надіслав фото.{photo_info}\n\n[Фото в base64 (data:image/jpeg;base64):\n{photo_base64}]"
             
+            await send_status_update(message, "📸 Фото оброблено, відправляю агенту...")
             logger.info(f"Processing photo follow-up: {photo.width}x{photo.height}, {len(photo_bytes)} bytes")
         except Exception as e:
             logger.exception("Error processing photo")
@@ -283,15 +346,27 @@ async def handle_followup(message: types.Message) -> None:
         
         # Add follow-up to the agent
         await cursor_client.add_followup(agent_id, followup_text)
+        await send_status_update(message, "✅ Повідомлення відправлено агенту")
+        
+        # Create status callback for progress updates
+        async def status_callback(elapsed: float, status: RunStatus) -> None:
+            if elapsed >= 10:
+                status_text = {
+                    RunStatus.RUNNING: "⏳ Агент обробляє ваш запит...",
+                    RunStatus.CREATING: "🔄 Агент створюється...",
+                    RunStatus.EXPIRED: "⚠️ Агент застарів...",
+                }.get(status, "⏳ Агент працює...")
+                await send_status_update(message, f"{status_text} (прошло {int(elapsed)}с)")
         
         # After follow-up, agent status changes to RUNNING (if it was FINISHED)
         # Wait for agent to complete with new response
-        await message.reply("⏳ Відправляю ваше повідомлення агенту. Очікую відповідь...")
+        await send_status_update(message, "⏳ Очікую відповідь від агента...")
         
         # Pass initial status to detect transition from FINISHED to RUNNING
         completed_run = await cursor_client.wait_agent_completion(
             agent_id, 
-            initial_status=initial_run_status
+            initial_status=initial_run_status,
+            status_callback=status_callback
         )
         
         if completed_run.output:

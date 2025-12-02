@@ -5,7 +5,7 @@ import base64
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
 
@@ -358,6 +358,8 @@ class CursorClient:
                 status = RunStatus.COMPLETED
             elif status_str in ["FAILED", "ERROR", "FAILURE"]:
                 status = RunStatus.FAILED
+            elif status_str == "EXPIRED":
+                status = RunStatus.EXPIRED
             elif status_str in ["CREATING", "RUNNING"]:
                 status = RunStatus.RUNNING
             else:
@@ -528,6 +530,7 @@ class CursorClient:
         timeout: int = 300,
         poll_interval: int = 5,
         initial_status: Optional[RunStatus] = None,
+            status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None,
     ) -> RunResponse:
         """
         Wait for agent to complete by polling its status.
@@ -537,6 +540,7 @@ class CursorClient:
             timeout: Maximum time to wait in seconds (default: 300)
             poll_interval: Interval between polls in seconds (default: 5)
             initial_status: Initial status before waiting (to detect status changes)
+            status_callback: Optional callback function(elapsed_seconds, status) called periodically
 
         Returns:
             RunResponse with completed agent information
@@ -551,6 +555,9 @@ class CursorClient:
         )
 
         start_time = time.time()
+        last_status_update = 0.0
+        status_update_interval = 10.0  # Update status every 10 seconds
+        
         # If initial status was COMPLETED and we just sent a follow-up,
         # we must дочекатися, поки агент перейде в RUNNING, а вже потім — знову в COMPLETED.
         waiting_for_restart = initial_status == RunStatus.COMPLETED
@@ -564,6 +571,14 @@ class CursorClient:
                 )
 
             agent_status = await self.get_agent_status(agent_id)
+            
+            # Call status callback if provided and enough time has passed
+            if status_callback and elapsed - last_status_update >= status_update_interval:
+                try:
+                    await status_callback(elapsed, agent_status.status)
+                    last_status_update = elapsed
+                except Exception as e:
+                    logger.warning(f"Status callback failed: {e}")
 
             # If agent was COMPLETED when we sent follow-up, we must first see it RUNNING
             # before treating new COMPLETED as a new answer.
@@ -615,6 +630,10 @@ class CursorClient:
                 error_msg = agent_status.error or "Агент завершився з помилкою"
                 logger.error(f"Agent {agent_id} failed: {error_msg}")
                 raise CursorAPIError(f"Агент завершився з помилкою: {error_msg}")
+            elif agent_status.status == RunStatus.EXPIRED:
+                error_msg = "Агент застарів і більше не може обробляти запити. Створіть нового агента."
+                logger.warning(f"Agent {agent_id} expired")
+                raise CursorAPIError(error_msg)
 
             # Status is still running, wait before next poll
             logger.debug(f"Agent {agent_id} still running, waiting {poll_interval}s...")
@@ -648,6 +667,16 @@ class CursorClient:
                     f"Спробований URL: {self.base_url}/agents/{agent_id}/followup\n"
                     f"Відповідь сервера: {e.response.text}"
                 )
+            elif e.response.status_code == 409:
+                # 409 Conflict usually means agent is expired/deleted
+                try:
+                    error_data = e.response.json()
+                    if "deleted" in error_data.get("error", "").lower():
+                        error_msg = "Агент застарів або був видалений і більше не може обробляти запити. Створіть нового агента через /plan, /ask або /solve."
+                    else:
+                        error_msg = f"Не вдалося додати follow-up: {error_data.get('error', e.response.text)}"
+                except:
+                    error_msg = f"Агент застарів або був видалений. Створіть нового агента через /plan, /ask або /solve."
             else:
                 error_msg = f"Не вдалося додати follow-up: {e.response.text}"
             logger.error(error_msg)
