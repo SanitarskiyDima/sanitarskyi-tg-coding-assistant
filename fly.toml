@@ -16,6 +16,9 @@ primary_region = 'cdg'
   min_machines_running = 0
   processes = ['app']
 
+[processes]
+  app = "python main.py"
+
 [[vm]]
   cpu_kind = 'shared'
   cpus = 1
