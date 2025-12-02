@@ -564,6 +564,9 @@ class CursorClient:
         # we must дочекатися, поки агент перейде в RUNNING, а вже потім — знову в COMPLETED.
         waiting_for_restart = initial_status == RunStatus.COMPLETED
         seen_running_after_finished = False
+        last_completed_check_time = time.time() if waiting_for_restart else None
+        completed_check_interval = 15.0  # Check for new messages if still COMPLETED after 15 seconds
+        first_completed_check_done = False  # Flag to check immediately on first poll
         
         while True:
             elapsed = time.time() - start_time
@@ -589,8 +592,43 @@ class CursorClient:
                     logger.debug(f"Agent {agent_id} started running after follow-up")
                     seen_running_after_finished = True
                     waiting_for_restart = False
+                    last_completed_check_time = None
                 elif agent_status.status == RunStatus.COMPLETED:
                     # Still old completed state, wait more
+                    # But if it's been COMPLETED for too long, check conversation for new messages
+                    should_check_conversation = False
+                    if not first_completed_check_done:
+                        # Check immediately on first poll if agent is still COMPLETED
+                        should_check_conversation = True
+                        first_completed_check_done = True
+                    elif last_completed_check_time and (time.time() - last_completed_check_time) >= completed_check_interval:
+                        should_check_conversation = True
+                    
+                    if should_check_conversation:
+                        logger.info(f"Agent {agent_id} still COMPLETED after {completed_check_interval}s, checking conversation for new messages")
+                        try:
+                            messages = await self.get_agent_conversation(agent_id)
+                            assistant_messages = [
+                                msg.get("text", "") 
+                                for msg in messages 
+                                if msg.get("type") == "assistant_message"
+                            ]
+                            if assistant_messages:
+                                # Check if there are new messages (more than what we had initially)
+                                # For now, just return the last message if conversation exists
+                                latest_output = assistant_messages[-1]
+                                logger.info(f"Found new message in conversation for agent {agent_id}")
+                                return RunResponse(
+                                    id=agent_id,
+                                    status=RunStatus.COMPLETED,
+                                    output=latest_output,
+                                    error=None,
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to check conversation while waiting for restart: {e}")
+                        # Reset check time to avoid checking too frequently
+                        last_completed_check_time = time.time()
+                    
                     logger.debug(
                         f"Agent {agent_id} still in COMPLETED state after follow-up, "
                         f"waiting for it to start RUNNING..."
