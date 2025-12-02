@@ -1,4 +1,4 @@
-"""Telegram bot command handlers."""
+g"""Telegram bot command handlers."""
 
 import logging
 from typing import Optional

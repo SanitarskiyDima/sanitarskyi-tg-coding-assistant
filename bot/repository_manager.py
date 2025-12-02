@@ -40,3 +40,4 @@ def clear_selected_repository(user_id: int) -> None:
     """
     _selected_repositories.pop(user_id, None)
 
+

@@ -40,3 +40,4 @@ def clear_last_agent_id(user_id: int) -> None:
     """
     _last_agent_ids.pop(user_id, None)
 
+
