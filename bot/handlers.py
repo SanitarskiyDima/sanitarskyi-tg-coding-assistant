@@ -27,6 +27,34 @@ from bot.agent_manager import (
 logger = logging.getLogger(__name__)
 
 
+async def safe_reply_markdown(message: types.Message, text: str) -> None:
+    """
+    Safely send a message with Markdown formatting.
+    Falls back to plain text if Markdown parsing fails.
+    
+    Args:
+        message: Telegram message to reply to
+        text: Text to send (may contain Markdown)
+    """
+    try:
+        await message.reply(text, parse_mode="Markdown")
+    except Exception as e:
+        # If Markdown parsing fails, try to clean and send as plain text
+        logger.warning(f"Markdown parsing failed, sending as plain text: {e}")
+        # Remove Markdown formatting that might cause issues
+        cleaned_text = text.replace("**", "").replace("*", "").replace("`", "").replace("_", "")
+        try:
+            await message.reply(cleaned_text, parse_mode=None)
+        except Exception as e2:
+            # If even plain text fails, try truncating
+            logger.error(f"Failed to send message even as plain text: {e2}")
+            # Truncate to safe length and try again
+            max_length = 4000
+            if len(cleaned_text) > max_length:
+                cleaned_text = cleaned_text[:max_length].rsplit('\n', 1)[0] + "\n\n_... (повідомлення обрізано)_"
+            await message.reply(cleaned_text, parse_mode=None)
+
+
 async def send_status_update(message: types.Message, text: str) -> None:
     """
     Send status update message to user.
@@ -42,14 +70,23 @@ async def send_status_update(message: types.Message, text: str) -> None:
         logger.warning(f"Failed to send status update: {e}")
 
 
-async def handle_plan(message: types.Message, task_manager: TaskManager) -> None:
+async def handle_plan(message: types.Message, task_manager: TaskManager, is_group_chat: bool = False) -> None:
     """
     Handle /plan command.
 
     Args:
         message: Telegram message
         task_manager: TaskManager instance
+        is_group_chat: Whether this is a group chat
     """
+    # In group chats, only owner can use this command
+    if is_group_chat:
+        await message.reply(
+            "❌ У групових чатах для звичайних користувачів доступні тільки упоминания бота.\n\n"
+            "Тегніть бота з питанням про проект."
+        )
+        return
+    
     text = message.text or ""
     # Remove /plan command prefix
     task_text = text.replace("/plan", "").strip()
@@ -87,7 +124,7 @@ async def handle_plan(message: types.Message, task_manager: TaskManager) -> None
         )
         # Save agent ID for follow-up support
         set_last_agent_id(message.from_user.id, agent_id)
-        await message.reply(result, parse_mode="Markdown")
+        await safe_reply_markdown(message, result)
     except CursorTimeoutError:
         await message.reply(
             "⏱ Операція зайняла занадто багато часу. "
@@ -109,13 +146,14 @@ async def handle_plan(message: types.Message, task_manager: TaskManager) -> None
         )
 
 
-async def handle_ask(message: types.Message, task_manager: TaskManager) -> None:
+async def handle_ask(message: types.Message, task_manager: TaskManager, is_group_chat: bool = False) -> None:
     """
     Handle /ask command.
 
     Args:
         message: Telegram message
         task_manager: TaskManager instance
+        is_group_chat: Whether this is a group chat
     """
     text = message.text or ""
     # Remove /ask command prefix
@@ -147,14 +185,23 @@ async def handle_ask(message: types.Message, task_manager: TaskManager) -> None:
                 await send_status_update(message, f"{status_text} (прошло {int(elapsed)}с)")
 
         await send_status_update(message, "⏳ Агент працює над завданням...")
+        
+        # In private chats, always create new agent (no reuse)
+        # In group chats, try to reuse existing agent
+        existing_agent_id = None
+        if is_group_chat:
+            existing_agent_id = get_last_agent_id(message.from_user.id)
+        
         agent_id, result = await task_manager.run_ask(
             task_text,
             repository_url=selected_repo,
-            status_callback=status_callback
+            status_callback=status_callback,
+            is_non_technical=is_group_chat,  # In groups, use non-technical mode
+            reuse_agent_id=existing_agent_id if is_group_chat else None  # Only reuse in groups
         )
         # Save agent ID for follow-up support
         set_last_agent_id(message.from_user.id, agent_id)
-        await message.reply(result, parse_mode="Markdown")
+        await safe_reply_markdown(message, result)
     except CursorTimeoutError:
         await message.reply(
             "⏱ Операція зайняла занадто багато часу. "
@@ -176,14 +223,23 @@ async def handle_ask(message: types.Message, task_manager: TaskManager) -> None:
         )
 
 
-async def handle_solve(message: types.Message, task_manager: TaskManager) -> None:
+async def handle_solve(message: types.Message, task_manager: TaskManager, is_group_chat: bool = False) -> None:
     """
     Handle /solve command - generate code solution for a task.
 
     Args:
         message: Telegram message
         task_manager: TaskManager instance
+        is_group_chat: Whether this is a group chat
     """
+    # In group chats, only owner can use this command
+    if is_group_chat:
+        await message.reply(
+            "❌ У групових чатах для звичайних користувачів доступні тільки упоминания бота.\n\n"
+            "Тегніть бота з питанням про проект."
+        )
+        return
+    
     text = message.text or ""
     # Remove /solve command prefix
     task_text = text.replace("/solve", "").strip()
@@ -221,7 +277,7 @@ async def handle_solve(message: types.Message, task_manager: TaskManager) -> Non
         )
         # Save agent ID for follow-up support
         set_last_agent_id(message.from_user.id, agent_id)
-        await message.reply(result, parse_mode="Markdown")
+        await safe_reply_markdown(message, result)
     except CursorTimeoutError:
         await message.reply(
             "⏱ Операція зайняла занадто багато часу. "
@@ -250,30 +306,172 @@ async def handle_start(message: types.Message) -> None:
     Args:
         message: Telegram message
     """
-    welcome_text = (
-        "👋 Привіт! Я бот для роботи з Cursor Cloud Agent API.\n\n"
-        "**Доступні команди:**\n"
-        "• `/repos` - показати список репозиторіїв\n"
-        "• `/favrepos` - показати тільки улюблені репозиторії\n"
-        "• `/setrepo <номер>` - вибрати репозиторій\n"
-        "• `/plan <задача>` - отримати покроковий план рішення\n"
-        "• `/ask <задача>` - отримати уточнюючі питання\n"
-        "• `/solve <задача>` - згенерувати код для вирішення задачі\n"
-        "• `/agents` - показати список активних агентів та їх історію\n\n"
-        "**Приклади:**\n"
-        "• `/repos` - подивитися доступні репозиторії\n"
-        "• `/favrepos` - швидко вибрати з улюблених\n"
-        "• `/setrepo 1` - вибрати перший репозиторій\n"
-        "• `/plan Створити REST API на FastAPI`\n"
-        "• `/ask Як оптимізувати SQL запити?`\n"
-        "• `/agents` - переглянути активних агентів та продовжити роботу\n\n"
-        "**Як працювати з агентами:**\n"
-        "1. Створіть агента через `/plan` або `/ask`\n"
-        "2. Перегляньте список через `/agents`\n"
-        "3. Виберіть агента для перегляду історії\n"
-        "4. Відправте текстове повідомлення або фото для follow-up"
-    )
+    from aiogram.enums import ChatType
+    
+    # Different messages for private and group chats
+    is_group = message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+    
+    if is_group:
+        bot_username = (await message.bot.get_me()).username
+        welcome_text = (
+            "👋 Привіт! Я бот-помічник для відповідей на питання про проект.\n\n"
+            "**Як мене використовувати:**\n"
+            f"Просто тегніть мене з питанням: @{bot_username} ваше питання\n\n"
+            "**Приклади:**\n"
+            f"• @{bot_username} Як працює автентифікація користувачів?\n"
+            f"• @{bot_username} Що робить функція X?\n"
+            f"• @{bot_username} Як працюють фільтри на сторінці пошуку вакансій?\n\n"
+            "Я відповім на ваші питання."
+        )
+    else:
+        welcome_text = (
+            "👋 Привіт! Я бот для роботи з Cursor Cloud Agent API.\n\n"
+            "**Доступні команди:**\n"
+            "• `/repos` - показати список репозиторіїв\n"
+            "• `/favrepos` - показати тільки улюблені репозиторії\n"
+            "• `/setrepo <номер>` - вибрати репозиторій\n"
+            "• `/plan <задача>` - отримати покроковий план рішення\n"
+            "• `/ask <задача>` - отримати відповідь на питання\n"
+            "• `/solve <задача>` - згенерувати код для вирішення задачі\n"
+            "• `/agents` - показати список активних агентів та їх історію\n\n"
+            "**Приклади:**\n"
+            "• `/repos` - подивитися доступні репозиторії\n"
+            "• `/favrepos` - швидко вибрати з улюблених\n"
+            "• `/setrepo 1` - вибрати перший репозиторій\n"
+            "• `/plan Створити REST API на FastAPI`\n"
+            "• `/ask Як оптимізувати SQL запити?`\n"
+            "• `/agents` - переглянути активних агентів та продовжити роботу\n\n"
+            "**Як працювати з агентами:**\n"
+            "1. Створіть агента через `/plan` або `/ask`\n"
+            "2. Перегляньте список через `/agents`\n"
+            "3. Виберіть агента для перегляду історії\n"
+            "4. Відправте текстове повідомлення або фото для follow-up"
+        )
     await message.reply(welcome_text, parse_mode="Markdown")
+
+
+async def handle_group_mention(message: types.Message, task_manager: TaskManager) -> None:
+    """
+    Handle bot mentions in group chats (when user tags the bot with a question).
+
+    Args:
+        message: Telegram message
+        task_manager: TaskManager instance
+    """
+    text = message.text or ""
+    original_text = text
+    
+    logger.info(f"Handling group mention. Original text: {text}")
+    
+    # Remove bot mention from text
+    # Bot mentions can be in format @botname or @botname question
+    bot_username = (await message.bot.get_me()).username
+    
+    if message.entities:
+        for entity in message.entities:
+            if entity.type == "mention":
+                # Remove the mention part
+                mention_text = text[entity.offset:entity.offset + entity.length]
+                logger.debug(f"Removing mention entity: {mention_text}")
+                # Remove exact match
+                text = text.replace(mention_text, "", 1).strip()
+                # Also try case-insensitive removal
+                if bot_username:
+                    if mention_text.lower() == f"@{bot_username.lower()}":
+                        text = text.replace(f"@{bot_username}", "", 1).strip()
+                        text = text.replace(f"@{bot_username.lower()}", "", 1).strip()
+    
+    # Also try to remove @botname if present (case insensitive)
+    if bot_username:
+        # Remove all variations
+        text = text.replace(f"@{bot_username}", "").strip()
+        text = text.replace(f"@{bot_username.lower()}", "").strip()
+        text = text.replace(f"@{bot_username.upper()}", "").strip()
+    
+    logger.info(f"Text after removing mention: '{text}'")
+    
+    if not text:
+        await message.reply(
+            "👋 Привіт! Тегніть мене з питанням про проект.\n\n"
+            "**Приклад:**\n"
+            f"@{bot_username} Як працює автентифікація користувачів?\n"
+            f"@{bot_username} Що робить функція X?\n"
+            f"@{bot_username} Як налаштувати фільтри на джоб борді?"
+        )
+        return
+
+    # Send typing indicator
+    await message.bot.send_chat_action(message.chat.id, "typing")
+    
+    # Send initial message for group chats (no status updates)
+    status_message = await message.reply(
+        "🔄 Агент почав роботу над вашим питанням. "
+        "Це може зайняти деякий час (впродовж кількох хвилин) залежно від складності питання.\n\n"
+        "💡 **Порада:** Чим детальніше ваш запит (з вказаними ендпоінтами, назвами функцій та іншими деталями), "
+        "тим швидше та точніше буде відповідь."
+    )
+
+    # Get selected repository for user (use default if not set)
+    selected_repo = get_selected_repository(message.from_user.id)
+
+    try:
+        # No status callback for group chats - we just show initial message
+        
+        # Try to reuse existing agent for group chats (to maintain conversation context)
+        existing_agent_id = get_last_agent_id(message.from_user.id)
+        
+        # Use non-technical mode for group chats
+        agent_id, result = await task_manager.run_ask(
+            text,
+            repository_url=selected_repo,
+            status_callback=None,  # No status updates for group chats
+            is_non_technical=True,  # Always use non-technical mode in groups
+            reuse_agent_id=existing_agent_id  # Try to reuse existing agent
+        )
+        # Save agent ID for follow-up support
+        set_last_agent_id(message.from_user.id, agent_id)
+        
+        # Delete status message and send result
+        try:
+            await status_message.delete()
+        except Exception:
+            pass  # Ignore if message already deleted
+        
+        await safe_reply_markdown(message, result)
+    except CursorTimeoutError:
+        # Delete status message on error too
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+        await message.reply(
+            "⏱ Операція зайняла занадто багато часу. "
+            "Спробуйте спростити питання або повторити спробу пізніше."
+        )
+    except CursorAPIError as e:
+        # Delete status message on error
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+        # Remove markdown formatting to avoid Telegram parsing errors
+        error_msg = str(e).replace("**", "").replace("*", "").replace("`", "")
+        await message.reply(
+            f"❌ Помилка при зверненні до Cursor API:\n\n{error_msg}\n\n"
+            "Спробуйте ще раз пізніше.",
+            parse_mode=None  # Disable markdown to avoid parsing errors
+        )
+    except Exception as e:
+        # Delete status message on error
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+        logger.exception("Unexpected error in handle_group_mention")
+        await message.reply(
+            f"❌ Сталася неочікувана помилка:\n{str(e)}\n\n"
+            "Спробуйте ще раз пізніше."
+        )
 
 
 async def handle_followup(message: types.Message) -> None:
@@ -344,6 +542,24 @@ async def handle_followup(message: types.Message) -> None:
         initial_status = await cursor_client.get_agent_status(agent_id)
         initial_run_status = initial_status.status
         
+        # Get conversation BEFORE follow-up to know how many messages existed
+        messages_before = []
+        assistant_count_before = 0
+        assistant_messages_before = []
+        try:
+            messages_before = await cursor_client.get_agent_conversation(agent_id)
+            assistant_messages_before = [
+                msg for msg in messages_before 
+                if msg.get("type") == "assistant_message"
+            ]
+            assistant_count_before = len(assistant_messages_before)
+            logger.info(
+                f"🔍 [FOLLOW-UP DEBUG] Before follow-up: {assistant_count_before} assistant messages in conversation. "
+                f"Last message preview: {assistant_messages_before[-1].get('text', '')[:100] if assistant_messages_before else 'N/A'}..."
+            )
+        except Exception as e:
+            logger.warning(f"Failed to get conversation before follow-up: {e}")
+        
         # Add follow-up to the agent
         await cursor_client.add_followup(agent_id, followup_text)
         await send_status_update(message, "✅ Повідомлення відправлено агенту")
@@ -363,30 +579,66 @@ async def handle_followup(message: types.Message) -> None:
         await send_status_update(message, "⏳ Очікую відповідь від агента...")
         
         # Pass initial status to detect transition from FINISHED to RUNNING
+        # Also pass assistant messages count before follow-up to track new messages
         completed_run = await cursor_client.wait_agent_completion(
             agent_id, 
             initial_status=initial_run_status,
-            status_callback=status_callback
+            status_callback=status_callback,
+            assistant_messages_count_before=assistant_count_before
         )
         
+        logger.info(f"🔍 [FOLLOW-UP DEBUG] completed_run.output exists: {bool(completed_run.output)}, length: {len(completed_run.output) if completed_run.output else 0}")
         if completed_run.output:
-            await message.reply(completed_run.output, parse_mode="Markdown")
+            logger.info(f"🔍 [FOLLOW-UP DEBUG] Using output from completed_run: {completed_run.output[:200]}...")
+            await safe_reply_markdown(message, completed_run.output)
         else:
             # Try to get conversation to see latest response
             try:
-                messages = await cursor_client.get_agent_conversation(agent_id)
+                logger.info(f"🔍 [FOLLOW-UP DEBUG] No output in completed_run, fetching conversation...")
+                messages_after = await cursor_client.get_agent_conversation(agent_id)
                 assistant_messages = [
                     msg.get("text", "") 
-                    for msg in messages 
+                    for msg in messages_after 
                     if msg.get("type") == "assistant_message"
                 ]
-                if assistant_messages:
+                
+                logger.info(
+                    f"🔍 [FOLLOW-UP DEBUG] After follow-up: {len(assistant_messages)} assistant messages "
+                    f"(was {assistant_count_before}). "
+                    f"Last message preview: {assistant_messages[-1][:100] if assistant_messages else 'N/A'}..."
+                )
+                
+                # Only get NEW assistant messages (those that appeared after follow-up)
+                if len(assistant_messages) > assistant_count_before:
+                    # Get only the new messages (after the count we had before)
+                    new_messages = assistant_messages[assistant_count_before:]
+                    # Combine all new messages to get complete response
+                    if len(new_messages) == 1:
+                        latest_response = new_messages[0]
+                    else:
+                        # Multiple new messages - combine them
+                        latest_response = "\n\n".join(new_messages)
+                    logger.info(
+                        f"✅ [FOLLOW-UP DEBUG] Found {len(new_messages)} NEW assistant messages after follow-up. "
+                        f"Combined response: {len(latest_response)} chars, "
+                        f"preview: {latest_response[:200]}..."
+                    )
+                    await safe_reply_markdown(message, latest_response)
+                elif assistant_messages:
+                    # Fallback: if count didn't increase, use last message anyway
                     latest_response = assistant_messages[-1]
-                    await message.reply(latest_response, parse_mode="Markdown")
+                    logger.warning(
+                        f"⚠️ [FOLLOW-UP DEBUG] Assistant message count didn't increase "
+                        f"({assistant_count_before} -> {len(assistant_messages)}), "
+                        f"using last message anyway: {len(latest_response)} chars, "
+                        f"preview: {latest_response[:200]}..."
+                    )
+                    await safe_reply_markdown(message, latest_response)
                 else:
+                    logger.warning(f"⚠️ [FOLLOW-UP DEBUG] No assistant messages found after follow-up")
                     await message.reply("✅ Повідомлення відправлено. Агент обробляє ваш запит...")
             except Exception as e:
-                logger.warning(f"Failed to get conversation after follow-up: {e}")
+                logger.exception(f"❌ [FOLLOW-UP DEBUG] Failed to get conversation after follow-up: {e}")
                 await message.reply("✅ Повідомлення відправлено. Агент обробляє ваш запит...")
     except CursorTimeoutError:
         await message.reply(
@@ -625,38 +877,60 @@ async def handle_help(message: types.Message) -> None:
     Args:
         message: Telegram message
     """
-    help_text = (
-        "📖 **Довідка по командах:**\n\n"
-        "**Репозиторії:**\n"
-        "`/repos` - показати список доступних репозиторіїв (улюблені першими)\n"
-        "`/favrepos` - показати тільки улюблені репозиторії для швидкого вибору\n"
-        "`/setrepo <номер>` - вибрати репозиторій для роботи\n\n"
-        "**Улюблені репозиторії:**\n"
-        "Після вибору репозиторію через `/repos` або `/setrepo` ви можете додати його до улюблених.\n"
-        "Улюблені репозиторії відображаються першими у списку `/repos` з маркером ⭐.\n"
-        "Використайте `/favrepos` для швидкого вибору з улюблених без прокрутки всього списку.\n\n"
-        "**Робота з агентами:**\n"
-        "`/plan <текст задачі>`\n"
-        "Створює агента та отримує покроковий план рішення.\n\n"
-        "`/ask <текст>`\n"
-        "Створює агента та отримує уточнюючі питання від Cursor.\n\n"
-        "`/solve <текст>`\n"
-        "Створює агента для генерації коду.\n\n"
-        "`/agents`\n"
-        "Показує список активних агентів. При виборі агента відображається історія розмови.\n"
-        "Дозволяє продовжити роботу з існуючим агентом замість створення нового.\n\n"
-        "**Покроковий алгоритм роботи:**\n"
-        "1. Викличте `/repos`, щоб перевірити або змінити репозиторій (за потреби).\n"
-        "2. Створіть агента через `/plan <задача>` або `/ask <задача>`.\n"
-        "3. За потреби перегляньте всіх агентів через `/agents` та виберіть потрібного.\n"
-        "4. Після створення або вибору агента відправляйте звичайні текстові повідомлення або фото (без `/`),\n"
-        "   щоб додавати follow-up інструкції.\n"
-        "5. Читайте відповіді агента та за потреби уточнюйте деталі новими повідомленнями або фото.\n\n"
-        "**Відправка фото:**\n"
-        "Ви можете відправляти фото агентам як follow-up повідомлення. Фото буде конвертовано та передано агенту.\n"
-        "Можна додати текст до фото - він буде включений у повідомлення.\n\n"
-        "**Примітка:** Команди `/plan`, `/ask`, `/solve` вимагають вказання тексту задачі."
-    )
+    from aiogram.enums import ChatType
+    
+    # Different help messages for private and group chats
+    is_group = message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
+    
+    if is_group:
+        bot_username = (await message.bot.get_me()).username
+        help_text = (
+            "📖 **Довідка для групових чатів:**\n\n"
+            "**Як використовувати бота:**\n"
+            f"Просто тегніть мене з питанням про проект: @{bot_username} ваше питання\n\n"
+            "**Приклади:**\n"
+            f"• @{bot_username} Як працює автентифікація користувачів?\n"
+            f"• @{bot_username} Що робить функція X?\n"
+            f"• @{bot_username} Як налаштувати фільтри на джоб борді?\n\n"
+            "**Особливості:**\n"
+            "• Я відповідаю простими словами, без технічного жаргону\n"
+            "• Фокусуюсь на практичних аспектах та бізнес-логіці\n"
+            "• Зберігаю контекст розмови - можна задавати уточнюючі питання\n\n"
+            "**Порада:** Можна відповідати на мої повідомлення, щоб продовжити діалог."
+        )
+    else:
+        help_text = (
+            "📖 **Довідка по командах:**\n\n"
+            "**Репозиторії:**\n"
+            "`/repos` - показати список доступних репозиторіїв (улюблені першими)\n"
+            "`/favrepos` - показати тільки улюблені репозиторії для швидкого вибору\n"
+            "`/setrepo <номер>` - вибрати репозиторій для роботи\n\n"
+            "**Улюблені репозиторії:**\n"
+            "Після вибору репозиторію через `/repos` або `/setrepo` ви можете додати його до улюблених.\n"
+            "Улюблені репозиторії відображаються першими у списку `/repos` з маркером ⭐.\n"
+            "Використайте `/favrepos` для швидкого вибору з улюблених без прокрутки всього списку.\n\n"
+            "**Робота з агентами:**\n"
+            "`/plan <текст задачі>`\n"
+            "Створює агента та отримує покроковий план рішення.\n\n"
+            "`/ask <текст>`\n"
+            "Створює агента та отримує відповідь на питання від Cursor.\n\n"
+            "`/solve <текст>`\n"
+            "Створює агента для генерації коду.\n\n"
+            "`/agents`\n"
+            "Показує список активних агентів. При виборі агента відображається історія розмови.\n"
+            "Дозволяє продовжити роботу з існуючим агентом замість створення нового.\n\n"
+            "**Покроковий алгоритм роботи:**\n"
+            "1. Викличте `/repos`, щоб перевірити або змінити репозиторій (за потреби).\n"
+            "2. Створіть агента через `/plan <задача>` або `/ask <задача>`.\n"
+            "3. За потреби перегляньте всіх агентів через `/agents` та виберіть потрібного.\n"
+            "4. Після створення або вибору агента відправляйте звичайні текстові повідомлення або фото (без `/`),\n"
+            "   щоб додавати follow-up інструкції.\n"
+            "5. Читайте відповіді агента та за потреби уточнюйте деталі новими повідомленнями або фото.\n\n"
+            "**Відправка фото:**\n"
+            "Ви можете відправляти фото агентам як follow-up повідомлення. Фото буде конвертовано та передано агенту.\n"
+            "Можна додати текст до фото - він буде включений у повідомлення.\n\n"
+            "**Примітка:** Команди `/plan`, `/ask`, `/solve` вимагають вказання тексту задачі."
+        )
     await message.reply(help_text, parse_mode="Markdown")
 
 

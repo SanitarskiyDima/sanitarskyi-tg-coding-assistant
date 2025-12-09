@@ -56,6 +56,14 @@ async def main() -> None:
         ]
     )
 
+    # Test bot connection
+    try:
+        bot_info = await bot.get_me()
+        logger.info(f"✅ Bot connected successfully! Username: @{bot_info.username}, ID: {bot_info.id}")
+    except Exception as e:
+        logger.error(f"❌ Failed to connect bot: {e}")
+        raise
+
     logger.info("Bot initialized. Starting polling...")
 
     try:

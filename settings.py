@@ -19,11 +19,15 @@ class Settings:
         self.api_base: str = os.getenv("API_BASE", "https://api.cursor.com/v0")
         # Repository URL for Cursor API (required)
         self.repository_url: str = os.getenv(
-            "CURSOR_REPOSITORY_URL", "https://github.com/microsoft/vscode"
+            "CURSOR_REPOSITORY_URL", "https://github.com/SanitarskiyDima/nour-jobs"
         )
         # Allowed user ID (default: 215985701 for @dmytro_s_s)
         allowed_user_id = os.getenv("ALLOWED_USER_ID", "215985701")
         self.allowed_user_id: int = int(allowed_user_id)
+        # Default model for Cursor API (e.g., "gemini-3-pro", "claude-4-sonnet")
+        self.default_model: str = os.getenv("CURSOR_DEFAULT_MODEL", "gemini-3-pro")
+        # Default branch for repository operations
+        self.default_branch: str = os.getenv("CURSOR_DEFAULT_BRANCH", "main")
 
     @staticmethod
     def _get_required_env(key: str) -> str:

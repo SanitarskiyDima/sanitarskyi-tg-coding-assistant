@@ -223,7 +223,7 @@ class CursorClient:
             return "Помилка мережі: {}\n\nEndpoint: {}".format(error_str, endpoint)
 
     async def create_task(
-        self, text: str, repository_url: str = None, action: str = None
+        self, text: str, repository_url: str = None, action: str = None, model: str = None
     ) -> TaskResponse:
         """
         Create a new agent task in Cursor.
@@ -231,6 +231,9 @@ class CursorClient:
         Args:
             text: Task description/prompt text
             repository_url: Repository URL (required by API)
+            action: Action type (plan, ask, code_generate)
+            model: AI model to use (e.g., "gemini-3-pro", "claude-4-sonnet"). 
+                   If None, uses default from settings.
 
         Returns:
             TaskResponse with created task information
@@ -240,19 +243,136 @@ class CursorClient:
             httpx.RequestError: If network error occurs
         """
         if not repository_url:
-            # Try to get first available repository, fallback to settings
+            # Try to use default repository from settings first, then first available
             try:
                 repos = await self.get_available_repositories()
+                default_repo_url = app_settings.repository_url
+                
+                logger.info(f"Looking for default repository: {default_repo_url}")
+                logger.debug(f"Available repositories: {[repo.get('repository') for repo in repos]}")
+                
                 if repos and len(repos) > 0:
-                    repository_url = repos[0]["repository"]
-                    logger.info(f"Using first available repository: {repository_url}")
+                    # Check if default repository from settings is in the available list
+                    # Support both full URL format (https://github.com/owner/repo) and short format (owner/repo)
+                    default_repo_found = False
+                    
+                    # Normalize default repo URL for comparison
+                    # Extract owner/repo from full URL if needed, or use as-is if already in owner/repo format
+                    default_repo_normalized = default_repo_url
+                    if default_repo_url.startswith("http"):
+                        # Extract owner/repo from full URL
+                        try:
+                            from urllib.parse import urlparse
+                            parsed = urlparse(default_repo_url)
+                            path_parts = parsed.path.strip("/").split("/")
+                            if len(path_parts) >= 2:
+                                default_repo_normalized = f"{path_parts[0]}/{path_parts[1]}"
+                        except Exception:
+                            pass
+                    elif "/" in default_repo_url and not default_repo_url.startswith("http"):
+                        # Already in owner/repo format, use as-is
+                        default_repo_normalized = default_repo_url
+                    
+                    logger.debug(f"Normalized default repo: {default_repo_normalized}")
+                    
+                    for repo in repos:
+                        repo_url = repo.get("repository", "")
+                        owner = repo.get("owner", "")
+                        name = repo.get("name", "")
+                        
+                        # Extract owner/repo from repo_url if it's a full URL
+                        repo_normalized = f"{owner}/{name}" if owner and name else ""
+                        if repo_url.startswith("http"):
+                            try:
+                                from urllib.parse import urlparse
+                                parsed = urlparse(repo_url)
+                                path_parts = parsed.path.strip("/").split("/")
+                                if len(path_parts) >= 2:
+                                    repo_normalized = f"{path_parts[0]}/{path_parts[1]}"
+                            except Exception:
+                                pass
+                        
+                        logger.debug(f"Comparing repo: {repo_url} (normalized: {repo_normalized}) with default: {default_repo_url} (normalized: {default_repo_normalized})")
+                        
+                        # Try multiple comparison methods
+                        repo_match = False
+                        match_reason = ""
+                        
+                        # 1. Exact match of full URLs
+                        if repo_url == default_repo_url:
+                            repo_match = True
+                            match_reason = "exact URL match"
+                        # 2. Match normalized owner/repo format (most reliable)
+                        elif repo_normalized and default_repo_normalized and repo_normalized.lower() == default_repo_normalized.lower():
+                            repo_match = True
+                            match_reason = f"normalized match ({repo_normalized} == {default_repo_normalized})"
+                        # 3. Match if default_repo_url is in repo_url (for partial matches)
+                        elif default_repo_url in repo_url or repo_url in default_repo_url:
+                            repo_match = True
+                            match_reason = "partial URL match"
+                        # 4. Match if normalized default is in repo URL
+                        elif default_repo_normalized and default_repo_normalized.lower() in repo_url.lower():
+                            repo_match = True
+                            match_reason = f"normalized in URL ({default_repo_normalized} in {repo_url})"
+                        
+                        if repo_match:
+                            repository_url = repo_url
+                            default_repo_found = True
+                            logger.info(
+                                f"✅ Found and using default repository: {repository_url} "
+                                f"(matched default: {default_repo_url}, reason: {match_reason})"
+                            )
+                            break
+                    
+                    # If default not found, try to find by name (e.g., "nour-jobs")
+                    if not default_repo_found:
+                        # Try to extract repo name from default URL and find by name
+                        repo_name_to_find = None
+                        if default_repo_normalized and "/" in default_repo_normalized:
+                            repo_name_to_find = default_repo_normalized.split("/")[-1]
+                        
+                        if repo_name_to_find:
+                            logger.info(f"Trying to find repository by name: {repo_name_to_find}")
+                            for repo in repos:
+                                repo_url = repo.get("repository", "")
+                                name = repo.get("name", "")
+                                
+                                # Check if repo name matches (case-insensitive)
+                                if name and name.lower() == repo_name_to_find.lower():
+                                    repository_url = repo_url
+                                    default_repo_found = True
+                                    logger.info(
+                                        f"✅ Found repository by name: {repository_url} "
+                                        f"(name: {name}, searched for: {repo_name_to_find})"
+                                    )
+                                    break
+                                # Also check if name is in URL
+                                elif repo_name_to_find.lower() in repo_url.lower():
+                                    repository_url = repo_url
+                                    default_repo_found = True
+                                    logger.info(
+                                        f"✅ Found repository by name in URL: {repository_url} "
+                                        f"(searched for: {repo_name_to_find})"
+                                    )
+                                    break
+                        
+                        # If still not found, use first available
+                        if not default_repo_found:
+                            repository_url = repos[0]["repository"]
+                            logger.warning(
+                                f"⚠️ Default repository '{default_repo_url}' not found in available repos. "
+                                f"Available repos: {[r.get('repository') for r in repos[:5]]}... "
+                                f"Using first available: {repository_url}\n"
+                                f"💡 Tip: Set CURSOR_REPOSITORY_URL in .env file to use a specific default repository."
+                            )
                 else:
-                    repository_url = app_settings.repository_url
+                    # No repositories available, use default from settings
+                    repository_url = default_repo_url
                     logger.warning(
-                        f"No repositories available, using default: {repository_url}"
+                        f"No repositories available, using default from settings: {repository_url}"
                     )
             except Exception as e:
-                logger.warning(f"Failed to get repositories, using default: {e}")
+                logger.warning(f"Failed to get repositories, using default from settings: {e}")
                 repository_url = app_settings.repository_url
 
         # Build prompt text - include action if specified
@@ -261,17 +381,28 @@ class CursorClient:
             # Prepend action instruction to the prompt
             action_map = {
                 "plan": "Створи план рішення для наступної задачі:",
-                "ask": "Сформулюй уточнюючі питання для наступної задачі:",
+                "ask": "Відповідай на питання користувача про проект. Будь корисним джерелом документації та інформації. Обмеж свою відповідь до 2000 символів:",
                 "code_generate": "Створи код для наступної задачі:",
             }
             action_prefix = action_map.get(action, "")
             if action_prefix:
                 prompt_text = f"{action_prefix}\n\n{text}"
         
+        # Use provided model or default from settings
+        model_to_use = model or app_settings.default_model
+        
+        # Build source with repository and branch
+        source_data = {"repository": repository_url}
+        if app_settings.default_branch:
+            source_data["ref"] = app_settings.default_branch
+        
         request_data = CreateTaskRequest(
-            prompt={"text": prompt_text}, source={"repository": repository_url}
+            prompt={"text": prompt_text},
+            source=source_data,
+            model=model_to_use
         )
         logger.info(f"Creating agent task: {text[:50]}...")
+        logger.info(f"Using model: {model_to_use}, repository: {repository_url}, branch: {app_settings.default_branch}")
         logger.debug(f"API Base URL: {self.base_url}, Endpoint: /agents")
 
         try:
@@ -385,16 +516,35 @@ class CursorClient:
                         if msg.get("type") == "assistant_message"
                     ]
                     if assistant_messages:
-                        # For plan/ask, combine all assistant messages to get full context
-                        # Usually the last message is the most comprehensive, but sometimes
-                        # we need all messages for complete questions/plan
+                        # If there's only one message, use it
                         if len(assistant_messages) == 1:
                             output = assistant_messages[0]
+                            logger.info(
+                                f"🔍 [GET_STATUS_DEBUG] Got output from conversation: {len(output)} chars, "
+                                f"single assistant message (preview: {output[:200]}...)"
+                            )
                         else:
-                            # Combine all messages, but prefer the last one if it's comprehensive
-                            # Join with double newlines for readability
-                            output = "\n\n".join(assistant_messages)
-                        logger.debug(f"Got output from conversation: {len(output)} chars, {len(assistant_messages)} messages")
+                            # Multiple messages - check if last one is complete or just a fragment
+                            last_message = assistant_messages[-1]
+                            # If last message is very short (< 100 chars), it might be just a fragment
+                            # In that case, combine with previous messages
+                            if len(last_message.strip()) < 100 and len(assistant_messages) > 1:
+                                # Last message seems incomplete, combine all messages
+                                output = "\n\n".join(assistant_messages)
+                                logger.info(
+                                    f"🔍 [GET_STATUS_DEBUG] Last message is short ({len(last_message)} chars), "
+                                    f"combining all {len(assistant_messages)} messages. "
+                                    f"Total: {len(output)} chars (preview: {output[:200]}...)"
+                                )
+                            else:
+                                # Last message seems complete, use it
+                                output = last_message
+                                logger.info(
+                                    f"🔍 [GET_STATUS_DEBUG] Got output from conversation: {len(output)} chars, "
+                                    f"total assistant messages: {len(assistant_messages)}, "
+                                    f"using last message (preview: {output[:200]}...). "
+                                    f"Previous messages lengths: {[len(m) for m in assistant_messages[:-1]]}"
+                                )
                 except Exception as e:
                     logger.warning(f"Failed to get conversation for agent {agent_id}: {e}")
                     # Fallback to summary if conversation fails
@@ -532,7 +682,8 @@ class CursorClient:
         timeout: int = 300,
         poll_interval: int = 5,
         initial_status: Optional[RunStatus] = None,
-            status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None,
+        status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None,
+        assistant_messages_count_before: Optional[int] = None,
     ) -> RunResponse:
         """
         Wait for agent to complete by polling its status.
@@ -553,7 +704,9 @@ class CursorClient:
         """
         logger.info(
             f"Waiting for agent {agent_id} to complete (timeout: {timeout}s, "
-            f"poll interval: {poll_interval}s)"
+            f"poll interval: {poll_interval}s, "
+            f"assistant_messages_count_before: {assistant_messages_count_before}, "
+            f"initial_status: {initial_status})"
         )
 
         start_time = time.time()
@@ -605,7 +758,7 @@ class CursorClient:
                         should_check_conversation = True
                     
                     if should_check_conversation:
-                        logger.info(f"Agent {agent_id} still COMPLETED after {completed_check_interval}s, checking conversation for new messages")
+                        logger.info(f"🔍 [WAIT_DEBUG] Agent {agent_id} still COMPLETED after {completed_check_interval}s, checking conversation for new messages")
                         try:
                             messages = await self.get_agent_conversation(agent_id)
                             assistant_messages = [
@@ -613,17 +766,51 @@ class CursorClient:
                                 for msg in messages 
                                 if msg.get("type") == "assistant_message"
                             ]
+                            logger.info(
+                                f"🔍 [WAIT_DEBUG] Found {len(assistant_messages)} assistant messages "
+                                f"(count_before: {assistant_messages_count_before}). "
+                                f"Last message preview: {assistant_messages[-1][:100] if assistant_messages else 'N/A'}..."
+                            )
                             if assistant_messages:
-                                # Check if there are new messages (more than what we had initially)
-                                # For now, just return the last message if conversation exists
-                                latest_output = assistant_messages[-1]
-                                logger.info(f"Found new message in conversation for agent {agent_id}")
-                                return RunResponse(
-                                    id=agent_id,
-                                    status=RunStatus.COMPLETED,
-                                    output=latest_output,
-                                    error=None,
-                                )
+                                # Only return if there are NEW messages (more than before follow-up)
+                                if assistant_messages_count_before is not None and len(assistant_messages) > assistant_messages_count_before:
+                                    # Get only new messages
+                                    new_messages = assistant_messages[assistant_messages_count_before:]
+                                    # Combine all new messages to get complete response
+                                    if len(new_messages) == 1:
+                                        latest_output = new_messages[0]
+                                    else:
+                                        # Multiple new messages - combine them
+                                        latest_output = "\n\n".join(new_messages)
+                                    logger.info(
+                                        f"✅ [WAIT_DEBUG] Found {len(new_messages)} NEW message(s) in conversation for agent {agent_id} "
+                                        f"(was {assistant_messages_count_before}, now {len(assistant_messages)}). "
+                                        f"Combined output: {len(latest_output)} chars, preview: {latest_output[:200]}..."
+                                    )
+                                    return RunResponse(
+                                        id=agent_id,
+                                        status=RunStatus.COMPLETED,
+                                        output=latest_output,
+                                        error=None,
+                                    )
+                                elif assistant_messages_count_before is None:
+                                    # If we don't know the count, use last message (fallback)
+                                    latest_output = assistant_messages[-1]
+                                    logger.warning(
+                                        f"⚠️ [WAIT_DEBUG] No count tracking, using last message for agent {agent_id} "
+                                        f"(total: {len(assistant_messages)}). Preview: {latest_output[:200]}..."
+                                    )
+                                    return RunResponse(
+                                        id=agent_id,
+                                        status=RunStatus.COMPLETED,
+                                        output=latest_output,
+                                        error=None,
+                                    )
+                                else:
+                                    logger.debug(
+                                        f"⏳ [WAIT_DEBUG] No new messages yet ({assistant_messages_count_before} -> {len(assistant_messages)}), "
+                                        f"waiting for agent to process follow-up..."
+                                    )
                         except Exception as e:
                             logger.warning(f"Failed to check conversation while waiting for restart: {e}")
                         # Reset check time to avoid checking too frequently
@@ -640,7 +827,7 @@ class CursorClient:
             if agent_status.status == RunStatus.COMPLETED:
                 # If we were waiting for new completion after follow-up, get fresh conversation
                 if seen_running_after_finished:
-                    logger.info(f"Agent {agent_id} completed after follow-up, getting latest response")
+                    logger.info(f"🔍 [WAIT_DEBUG] Agent {agent_id} completed after follow-up, getting latest response")
                     # Get the latest message from conversation
                     try:
                         messages = await self.get_agent_conversation(agent_id)
@@ -649,15 +836,48 @@ class CursorClient:
                             for msg in messages 
                             if msg.get("type") == "assistant_message"
                         ]
+                        logger.info(
+                            f"🔍 [WAIT_DEBUG] After completion: {len(assistant_messages)} assistant messages "
+                            f"(count_before: {assistant_messages_count_before}). "
+                            f"Last message preview: {assistant_messages[-1][:100] if assistant_messages else 'N/A'}..."
+                        )
                         if assistant_messages:
-                            # Return the last assistant message as output
-                            latest_output = assistant_messages[-1]
-                            return RunResponse(
-                                id=agent_id,
-                                status=RunStatus.COMPLETED,
-                                output=latest_output,
-                                error=None,
-                            )
+                            # Only return NEW messages (those after follow-up)
+                            if assistant_messages_count_before is not None and len(assistant_messages) > assistant_messages_count_before:
+                                new_messages = assistant_messages[assistant_messages_count_before:]
+                                # Combine all new messages to get complete response
+                                if len(new_messages) == 1:
+                                    latest_output = new_messages[0]
+                                else:
+                                    # Multiple new messages - combine them
+                                    latest_output = "\n\n".join(new_messages)
+                                logger.info(
+                                    f"✅ [WAIT_DEBUG] Returning NEW response after follow-up: {len(new_messages)} new message(s) "
+                                    f"(was {assistant_messages_count_before}, now {len(assistant_messages)}). "
+                                    f"Combined output: {len(latest_output)} chars, preview: {latest_output[:200]}..."
+                                )
+                                return RunResponse(
+                                    id=agent_id,
+                                    status=RunStatus.COMPLETED,
+                                    output=latest_output,
+                                    error=None,
+                                )
+                            else:
+                                # Fallback: use last message if count tracking not available
+                                latest_output = assistant_messages[-1]
+                                logger.warning(
+                                    f"⚠️ [WAIT_DEBUG] Using last message as fallback "
+                                    f"(count tracking: {assistant_messages_count_before}, "
+                                    f"total: {len(assistant_messages)}, "
+                                    f"count increased: {len(assistant_messages) > assistant_messages_count_before if assistant_messages_count_before is not None else 'N/A'}). "
+                                    f"Message preview: {latest_output[:200]}..."
+                                )
+                                return RunResponse(
+                                    id=agent_id,
+                                    status=RunStatus.COMPLETED,
+                                    output=latest_output,
+                                    error=None,
+                                )
                     except Exception as e:
                         logger.warning(f"Failed to get conversation after follow-up: {e}")
                         # Fall back to summary if available
