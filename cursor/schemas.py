@@ -21,6 +21,7 @@ class CreateTaskRequest(BaseModel):
 
     prompt: dict = Field(..., description="Prompt object with text")
     source: dict = Field(..., description="Source object with repository")
+    model: Optional[str] = Field(None, description="AI model to use (e.g., 'gemini-3-pro', 'claude-4-sonnet')")
 
 
 class CreateRunRequest(BaseModel):
