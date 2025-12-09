@@ -361,15 +361,22 @@ async def handle_group_mention_message(message: Message, **kwargs) -> None:
         # Don't process text mentions without bot info to avoid false positives
         logger.warning("Bot info not available, only checking reply-to-bot")
         if message.reply_to_message and message.reply_to_message.from_user:
-            # Try to get bot info from the bot instance directly as last resort
+            # Try direct call with shorter timeout as last resort (not using cached function)
             try:
-                bot_info_fallback = await get_bot_info_cached(message.bot)
+                bot_info_fallback = await asyncio.wait_for(message.bot.get_me(), timeout=2.0)
+                # Update cache whenever get_me() succeeds, regardless of condition
+                global _bot_info_cache, _bot_info_cache_time
+                _bot_info_cache = bot_info_fallback
+                _bot_info_cache_time = time.time()
+                logger.info("✅ Bot info retrieved and cached (fallback direct call)")
+                
+                # Now check if reply is to bot
                 if message.reply_to_message.from_user.id == bot_info_fallback.id:
                     bot_mentioned = True
-                    logger.info("✅ Bot mentioned via reply (fallback)")
-            except Exception:
+                    logger.info("✅ Bot mentioned via reply (fallback with direct call)")
+            except (asyncio.TimeoutError, Exception) as e:
                 # If we still can't get bot info, don't process as mention
-                logger.warning("Cannot verify reply-to-bot without bot info, skipping")
+                logger.warning(f"Cannot verify reply-to-bot without bot info (direct call also failed: {e}), skipping")
     
     if bot_mentioned:
         logger.info(f"🚀 Processing bot mention from user {message.from_user.id} (@{message.from_user.username}) in chat {message.chat.id}")
