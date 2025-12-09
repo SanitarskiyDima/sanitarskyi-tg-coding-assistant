@@ -42,14 +42,23 @@ async def send_status_update(message: types.Message, text: str) -> None:
         logger.warning(f"Failed to send status update: {e}")
 
 
-async def handle_plan(message: types.Message, task_manager: TaskManager) -> None:
+async def handle_plan(message: types.Message, task_manager: TaskManager, is_group_chat: bool = False) -> None:
     """
     Handle /plan command.
 
     Args:
         message: Telegram message
         task_manager: TaskManager instance
+        is_group_chat: Whether this is a group chat
     """
+    # In group chats, only allow ask mode
+    if is_group_chat:
+        await message.reply(
+            "❌ У групових чатах доступний тільки режим `/ask` для отримання відповідей на питання.\n\n"
+            "Використайте `/ask <ваше питання>` або тегніть бота з питанням."
+        )
+        return
+    
     text = message.text or ""
     # Remove /plan command prefix
     task_text = text.replace("/plan", "").strip()
@@ -109,13 +118,14 @@ async def handle_plan(message: types.Message, task_manager: TaskManager) -> None
         )
 
 
-async def handle_ask(message: types.Message, task_manager: TaskManager) -> None:
+async def handle_ask(message: types.Message, task_manager: TaskManager, is_group_chat: bool = False) -> None:
     """
     Handle /ask command.
 
     Args:
         message: Telegram message
         task_manager: TaskManager instance
+        is_group_chat: Whether this is a group chat
     """
     text = message.text or ""
     # Remove /ask command prefix
@@ -150,7 +160,8 @@ async def handle_ask(message: types.Message, task_manager: TaskManager) -> None:
         agent_id, result = await task_manager.run_ask(
             task_text,
             repository_url=selected_repo,
-            status_callback=status_callback
+            status_callback=status_callback,
+            is_non_technical=is_group_chat  # In groups, use non-technical mode
         )
         # Save agent ID for follow-up support
         set_last_agent_id(message.from_user.id, agent_id)
@@ -176,14 +187,23 @@ async def handle_ask(message: types.Message, task_manager: TaskManager) -> None:
         )
 
 
-async def handle_solve(message: types.Message, task_manager: TaskManager) -> None:
+async def handle_solve(message: types.Message, task_manager: TaskManager, is_group_chat: bool = False) -> None:
     """
     Handle /solve command - generate code solution for a task.
 
     Args:
         message: Telegram message
         task_manager: TaskManager instance
+        is_group_chat: Whether this is a group chat
     """
+    # In group chats, only allow ask mode
+    if is_group_chat:
+        await message.reply(
+            "❌ У групових чатах доступний тільки режим `/ask` для отримання відповідей на питання.\n\n"
+            "Використайте `/ask <ваше питання>` або тегніть бота з питанням."
+        )
+        return
+    
     text = message.text or ""
     # Remove /solve command prefix
     task_text = text.replace("/solve", "").strip()
@@ -274,6 +294,90 @@ async def handle_start(message: types.Message) -> None:
         "4. Відправте текстове повідомлення або фото для follow-up"
     )
     await message.reply(welcome_text, parse_mode="Markdown")
+
+
+async def handle_group_mention(message: types.Message, task_manager: TaskManager) -> None:
+    """
+    Handle bot mentions in group chats (when user tags the bot with a question).
+
+    Args:
+        message: Telegram message
+        task_manager: TaskManager instance
+    """
+    text = message.text or ""
+    
+    # Remove bot mention from text
+    # Bot mentions can be in format @botname or @botname question
+    if message.entities:
+        for entity in message.entities:
+            if entity.type == "mention":
+                # Remove the mention part
+                mention_text = text[entity.offset:entity.offset + entity.length]
+                text = text.replace(mention_text, "").strip()
+    
+    # Also try to remove @botname if present
+    bot_username = (await message.bot.get_me()).username
+    if bot_username:
+        text = text.replace(f"@{bot_username}", "").strip()
+    
+    if not text:
+        await message.reply(
+            "👋 Привіт! Тегніть мене з питанням про проект.\n\n"
+            "**Приклад:**\n"
+            f"@{bot_username} Як працює автентифікація користувачів?\n"
+            f"@{bot_username} Що робить функція X?\n\n"
+            "Або використайте команду `/ask <ваше питання>`"
+        )
+        return
+
+    # Send typing indicator
+    await message.bot.send_chat_action(message.chat.id, "typing")
+    await send_status_update(message, "🔄 Створюю агента...")
+
+    # Get selected repository for user (use default if not set)
+    selected_repo = get_selected_repository(message.from_user.id)
+
+    try:
+        # Create status callback for progress updates
+        async def status_callback(elapsed: float, status: RunStatus) -> None:
+            if elapsed >= 10:
+                status_text = {
+                    RunStatus.RUNNING: "⏳ Агент працює над завданням...",
+                    RunStatus.CREATING: "🔄 Агент створюється...",
+                    RunStatus.EXPIRED: "⚠️ Агент застарів...",
+                }.get(status, "⏳ Агент обробляє ваш запит...")
+                await send_status_update(message, f"{status_text} (прошло {int(elapsed)}с)")
+
+        await send_status_update(message, "⏳ Агент працює над завданням...")
+        # Use non-technical mode for group chats
+        agent_id, result = await task_manager.run_ask(
+            text,
+            repository_url=selected_repo,
+            status_callback=status_callback,
+            is_non_technical=True  # Always use non-technical mode in groups
+        )
+        # Save agent ID for follow-up support
+        set_last_agent_id(message.from_user.id, agent_id)
+        await message.reply(result, parse_mode="Markdown")
+    except CursorTimeoutError:
+        await message.reply(
+            "⏱ Операція зайняла занадто багато часу. "
+            "Спробуйте спростити питання або повторити спробу пізніше."
+        )
+    except CursorAPIError as e:
+        # Remove markdown formatting to avoid Telegram parsing errors
+        error_msg = str(e).replace("**", "").replace("*", "").replace("`", "")
+        await message.reply(
+            f"❌ Помилка при зверненні до Cursor API:\n\n{error_msg}\n\n"
+            "Спробуйте ще раз пізніше.",
+            parse_mode=None  # Disable markdown to avoid parsing errors
+        )
+    except Exception as e:
+        logger.exception("Unexpected error in handle_group_mention")
+        await message.reply(
+            f"❌ Сталася неочікувана помилка:\n{str(e)}\n\n"
+            "Спробуйте ще раз пізніше."
+        )
 
 
 async def handle_followup(message: types.Message) -> None:

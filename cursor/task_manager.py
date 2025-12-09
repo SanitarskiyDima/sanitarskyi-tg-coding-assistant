@@ -70,7 +70,8 @@ class TaskManager:
         self, 
         text: str, 
         repository_url: str = None,
-        status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None
+        status_callback: Optional[Callable[[float, RunStatus], Awaitable[None]]] = None,
+        is_non_technical: bool = False
     ) -> tuple[str, str]:
         """
         Create a task and run it with 'ask' action.
@@ -79,6 +80,7 @@ class TaskManager:
             text: Task description
             repository_url: Optional repository URL (if None, will be auto-selected)
             status_callback: Optional callback function(elapsed_seconds, status) for status updates
+            is_non_technical: If True, add prompt for non-technical users (testers, managers)
 
         Returns:
             Formatted questions text
@@ -87,12 +89,24 @@ class TaskManager:
             CursorAPIError: If API request fails
             CursorTimeoutError: If operation times out
         """
-        logger.info(f"Running ask for text: {text[:100]}...")
+        logger.info(f"Running ask for text: {text[:100]}... (non-technical: {is_non_technical})")
 
         try:
+            # Add non-technical prompt prefix if needed
+            prompt_text = text
+            if is_non_technical:
+                non_tech_prefix = (
+                    "Важливо: Відповідай як не технічному спеціалісту. "
+                    "Користувач - тестувальник або менеджер проекту. "
+                    "Використовуй просту мову, уникай технічного жаргону, "
+                    "пояснюй терміни якщо використовуєш їх. "
+                    "Фокусуйся на практичних аспектах та бізнес-логіці, а не на деталях реалізації.\n\n"
+                )
+                prompt_text = f"{non_tech_prefix}{text}"
+
             # Create task (agent) with ask action - the agent starts working immediately
             task = await self.client.create_task(
-                text=text, repository_url=repository_url, action="ask"
+                text=prompt_text, repository_url=repository_url, action="ask"
             )
 
             # Wait for agent to complete
