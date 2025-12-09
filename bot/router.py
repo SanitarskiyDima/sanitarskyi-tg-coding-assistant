@@ -345,7 +345,8 @@ async def handle_group_mention_message(message: Message, **kwargs) -> None:
                 bot_mentioned = True
                 logger.info(f"✅ Bot mentioned via text search: @{bot_info.username}")
             # Also check without @ symbol (sometimes users forget it)
-            elif bot_info.username.lower() in text_lower and message.text.startswith(bot_info.username):
+            # Use case-insensitive check for consistency
+            elif bot_info.username.lower() in text_lower and message.text.lower().startswith(bot_info.username.lower()):
                 bot_mentioned = True
                 logger.info(f"✅ Bot mentioned without @ symbol: {bot_info.username}")
         
@@ -356,13 +357,19 @@ async def handle_group_mention_message(message: Message, **kwargs) -> None:
                     bot_mentioned = True
                     logger.info("✅ Bot mentioned via reply")
     else:
-        # Fallback: if we can't get bot info, try to detect mentions by common patterns
-        logger.warning("Bot info not available, using fallback mention detection")
-        text_lower = message.text.lower() if message.text else ""
-        # Check for common bot mention patterns
-        if "@" in text_lower or message.reply_to_message:
-            bot_mentioned = True
-            logger.info("✅ Bot possibly mentioned (fallback detection)")
+        # Fallback: if we can't get bot info, only check if message is a reply to bot
+        # Don't process text mentions without bot info to avoid false positives
+        logger.warning("Bot info not available, only checking reply-to-bot")
+        if message.reply_to_message and message.reply_to_message.from_user:
+            # Try to get bot info from the bot instance directly as last resort
+            try:
+                bot_info_fallback = await get_bot_info_cached(message.bot)
+                if message.reply_to_message.from_user.id == bot_info_fallback.id:
+                    bot_mentioned = True
+                    logger.info("✅ Bot mentioned via reply (fallback)")
+            except Exception:
+                # If we still can't get bot info, don't process as mention
+                logger.warning("Cannot verify reply-to-bot without bot info, skipping")
     
     if bot_mentioned:
         logger.info(f"🚀 Processing bot mention from user {message.from_user.id} (@{message.from_user.username}) in chat {message.chat.id}")
