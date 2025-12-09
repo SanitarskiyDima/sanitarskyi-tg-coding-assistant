@@ -312,7 +312,13 @@ async def handle_start(message: types.Message) -> None:
     is_group = message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
     
     if is_group:
-        bot_username = (await message.bot.get_me()).username
+        try:
+            from bot.router import get_bot_info_cached
+            bot_info = await get_bot_info_cached(message.bot)
+            bot_username = bot_info.username
+        except Exception as e:
+            logger.error(f"Failed to get bot info in handle_start: {e}")
+            bot_username = "бот"
         welcome_text = (
             "👋 Привіт! Я бот-помічник для відповідей на питання про проект.\n\n"
             "**Як мене використовувати:**\n"
@@ -365,7 +371,19 @@ async def handle_group_mention(message: types.Message, task_manager: TaskManager
     
     # Remove bot mention from text
     # Bot mentions can be in format @botname or @botname question
-    bot_username = (await message.bot.get_me()).username
+    try:
+        from bot.router import get_bot_info_cached
+        bot_info = await get_bot_info_cached(message.bot)
+        bot_username = bot_info.username
+    except Exception as e:
+        logger.error(f"Failed to get bot info in handle_group_mention: {e}")
+        # Try direct call as fallback
+        try:
+            bot_username = (await message.bot.get_me()).username
+        except Exception:
+            logger.error("Failed to get bot username, cannot process mention")
+            await message.reply("❌ Помилка при обробці запиту. Спробуйте ще раз.")
+            return
     
     if message.entities:
         for entity in message.entities:
@@ -883,7 +901,13 @@ async def handle_help(message: types.Message) -> None:
     is_group = message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP)
     
     if is_group:
-        bot_username = (await message.bot.get_me()).username
+        try:
+            from bot.router import get_bot_info_cached
+            bot_info = await get_bot_info_cached(message.bot)
+            bot_username = bot_info.username
+        except Exception as e:
+            logger.error(f"Failed to get bot info in handle_help: {e}")
+            bot_username = "бот"
         help_text = (
             "📖 **Довідка для групових чатів:**\n\n"
             "**Як використовувати бота:**\n"

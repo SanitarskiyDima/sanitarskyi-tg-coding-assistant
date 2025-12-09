@@ -1,6 +1,8 @@
 """Telegram bot router configuration."""
 
+import asyncio
 import logging
+import time
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, F, Router, types
@@ -34,6 +36,47 @@ router = Router()
 
 # Initialize task manager
 task_manager = TaskManager(cursor_client)
+
+# Cache for bot info to avoid repeated get_me() calls
+_bot_info_cache = None
+_bot_info_cache_time = 0.0
+_bot_info_cache_ttl = 300.0  # 5 minutes
+
+
+async def get_bot_info_cached(bot) -> types.User:
+    """
+    Get bot info with caching to avoid timeout errors.
+    
+    Args:
+        bot: Bot instance
+        
+    Returns:
+        Bot user info
+    """
+    global _bot_info_cache, _bot_info_cache_time
+    
+    current_time = time.time()
+    
+    # Return cached if still valid
+    if _bot_info_cache and (current_time - _bot_info_cache_time) < _bot_info_cache_ttl:
+        return _bot_info_cache
+    
+    # Get fresh bot info with timeout handling
+    try:
+        _bot_info_cache = await asyncio.wait_for(bot.get_me(), timeout=5.0)
+        _bot_info_cache_time = current_time
+        return _bot_info_cache
+    except asyncio.TimeoutError:
+        logger.warning("get_me() timed out, using cached bot info if available")
+        if _bot_info_cache:
+            return _bot_info_cache
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get bot info: {e}")
+        if _bot_info_cache:
+            logger.warning("Using cached bot info due to error")
+            return _bot_info_cache
+        raise
 
 
 class UserAccessMiddleware(BaseMiddleware):
@@ -265,44 +308,61 @@ async def handle_group_mention_message(message: Message, **kwargs) -> None:
         logger.debug("Skipping command in group mention handler")
         return
     
-    # Get bot info once
-    bot_info = await message.bot.get_me()
+    # Get bot info once (with caching to avoid timeouts)
+    try:
+        bot_info = await get_bot_info_cached(message.bot)
+    except Exception as e:
+        logger.error(f"Failed to get bot info in handle_group_mention_message: {e}")
+        # Try to continue without bot info - use text-based detection only
+        bot_info = None
+        if not message.text:
+            return
+    
     bot_mentioned = False
     
-    logger.info(f"Checking mention in group chat {message.chat.id}. Text: {message.text[:100]}, Bot username: @{bot_info.username}")
-    
-    # Method 1: Check entities (most reliable for proper mentions)
-    if message.entities:
-        for entity in message.entities:
-            if entity.type == "mention":
-                mention_text = message.text[entity.offset:entity.offset + entity.length]
-                logger.debug(f"Found mention entity: '{mention_text}', bot username: @{bot_info.username}")
-                # Check exact match and case-insensitive match
-                if mention_text == f"@{bot_info.username}" or mention_text.lower() == f"@{bot_info.username.lower()}":
-                    bot_mentioned = True
-                    logger.info(f"✅ Bot mentioned via entity: {mention_text}")
-                    break
-    
-    # Method 2: Simple text search (fallback - works even if entities are missing)
-    # This is more reliable as it works even if Telegram doesn't parse entities correctly
-    if not bot_mentioned and bot_info.username:
-        text_lower = message.text.lower()
-        bot_mention_lower = f"@{bot_info.username.lower()}"
-        # Check if mention is anywhere in the text
-        if bot_mention_lower in text_lower:
-            bot_mentioned = True
-            logger.info(f"✅ Bot mentioned via text search: @{bot_info.username}")
-        # Also check without @ symbol (sometimes users forget it)
-        elif bot_info.username.lower() in text_lower and message.text.startswith(bot_info.username):
-            bot_mentioned = True
-            logger.info(f"✅ Bot mentioned without @ symbol: {bot_info.username}")
-    
-    # Method 3: Check if message is a reply to bot
-    if not bot_mentioned:
-        if message.reply_to_message and message.reply_to_message.from_user:
-            if message.reply_to_message.from_user.id == bot_info.id:
+    if bot_info:
+        logger.info(f"Checking mention in group chat {message.chat.id}. Text: {message.text[:100]}, Bot username: @{bot_info.username}")
+        
+        # Method 1: Check entities (most reliable for proper mentions)
+        if message.entities:
+            for entity in message.entities:
+                if entity.type == "mention":
+                    mention_text = message.text[entity.offset:entity.offset + entity.length]
+                    logger.debug(f"Found mention entity: '{mention_text}', bot username: @{bot_info.username}")
+                    # Check exact match and case-insensitive match
+                    if mention_text == f"@{bot_info.username}" or mention_text.lower() == f"@{bot_info.username.lower()}":
+                        bot_mentioned = True
+                        logger.info(f"✅ Bot mentioned via entity: {mention_text}")
+                        break
+        
+        # Method 2: Simple text search (fallback - works even if entities are missing)
+        # This is more reliable as it works even if Telegram doesn't parse entities correctly
+        if not bot_mentioned and bot_info.username:
+            text_lower = message.text.lower()
+            bot_mention_lower = f"@{bot_info.username.lower()}"
+            # Check if mention is anywhere in the text
+            if bot_mention_lower in text_lower:
                 bot_mentioned = True
-                logger.info("✅ Bot mentioned via reply")
+                logger.info(f"✅ Bot mentioned via text search: @{bot_info.username}")
+            # Also check without @ symbol (sometimes users forget it)
+            elif bot_info.username.lower() in text_lower and message.text.startswith(bot_info.username):
+                bot_mentioned = True
+                logger.info(f"✅ Bot mentioned without @ symbol: {bot_info.username}")
+        
+        # Method 3: Check if message is a reply to bot
+        if not bot_mentioned:
+            if message.reply_to_message and message.reply_to_message.from_user:
+                if message.reply_to_message.from_user.id == bot_info.id:
+                    bot_mentioned = True
+                    logger.info("✅ Bot mentioned via reply")
+    else:
+        # Fallback: if we can't get bot info, try to detect mentions by common patterns
+        logger.warning("Bot info not available, using fallback mention detection")
+        text_lower = message.text.lower() if message.text else ""
+        # Check for common bot mention patterns
+        if "@" in text_lower or message.reply_to_message:
+            bot_mentioned = True
+            logger.info("✅ Bot possibly mentioned (fallback detection)")
     
     if bot_mentioned:
         logger.info(f"🚀 Processing bot mention from user {message.from_user.id} (@{message.from_user.username}) in chat {message.chat.id}")
@@ -326,7 +386,14 @@ async def handle_group_mention_message(message: Message, **kwargs) -> None:
 async def handle_text_message(message: Message, **kwargs) -> None:
     """Handle text messages in private chats - check for bot mentions or follow-up."""
     # Check if bot is mentioned in private chat
-    bot_info = await message.bot.get_me()
+    try:
+        bot_info = await get_bot_info_cached(message.bot)
+    except Exception as e:
+        logger.error(f"Failed to get bot info in handle_text_message: {e}")
+        # If we can't get bot info, treat as follow-up (safer)
+        await handle_followup(message)
+        return
+    
     bot_mentioned = False
     original_text = message.text
     
